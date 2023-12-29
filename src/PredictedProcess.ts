@@ -1,7 +1,8 @@
-import type { ChildProcess } from 'child_process';
+import { ChildProcess, spawn } from 'child_process';
 
 export class PredictedProcess {
   private _childProcess: ChildProcess | null = null;
+  private _memoizedResult: Promise<void> | null = null;
 
   public constructor(
     public readonly id: number,
@@ -33,7 +34,53 @@ export class PredictedProcess {
    * ```
    */
   public async run(signal?: AbortSignal): Promise<void> {
-    // TODO: Implement this.
+    if (signal?.aborted) {
+      throw new Error('Signal already aborted');
+    }
+
+    if (this._memoizedResult) {
+      try {
+        await this._memoizedResult;
+      } catch {
+        this._memoizedResult = null;
+      }
+    }
+
+    if (!this._memoizedResult) {
+      this._memoizedResult = new Promise((resolve, reject) => {
+        this._childProcess = spawn(this.command, { shell: true });
+
+        const handleError = (error: Error) => {
+          this.cleanup();
+          this._memoizedResult = null;
+          reject(error);
+        };
+
+        this._childProcess?.on('error', handleError);
+
+        this._childProcess?.on('close', (code) => {
+          this.cleanup();
+
+          if (code === 0) {
+            resolve();
+          } else {
+            handleError(new Error(`Process exited with code ${code}`));
+          }
+        });
+
+        signal?.addEventListener('abort', () => {
+          handleError(new Error('AbortSignal triggered'));
+        });
+      });
+    }
+    return this._memoizedResult;
+  }
+
+  private cleanup() {
+    if (this._childProcess) {
+      this._childProcess.removeAllListeners();
+      this._childProcess.kill();
+    }
   }
 
   /**
@@ -65,7 +112,8 @@ export class PredictedProcess {
    * ```
    */
   public memoize(): PredictedProcess {
-    // TODO: Implement this.
-    return this;
+    const memoizedProcess = new PredictedProcess(this.id, this.command);
+    memoizedProcess._memoizedResult = this._memoizedResult;
+    return memoizedProcess;
   }
 }
